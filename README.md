@@ -1,8 +1,8 @@
-# Run a command on a private EC2 instance from GitHub Actions
+# GitHub ActionsからSSM経由でプライベートEC2上のコマンドを実行する
 
-This repository demonstrates how to run a shell command on a private Amazon EC2 instance from GitHub Actions using AWS Systems Manager Run Command. The instance has no inbound rules and does not require SSH access. A NAT Gateway provides outbound internet access for the instance.
+GitHub ActionsからAWS Systems Manager（SSM）のRun Commandを使って、プライベートサブネット上のAmazon EC2インスタンスでシェルコマンドを実行するサンプルです。EC2にインバウンドルールを設定せず、SSH接続も使用しません。EC2からインターネットへの通信にはNAT Gatewayを利用します。
 
-## Repository layout
+## リポジトリ構成
 
 ```text
 .
@@ -14,17 +14,18 @@ This repository demonstrates how to run a shell command on a private Amazon EC2 
 `-- README.md
 ```
 
-## Requirements
+## 前提条件
 
-* An AWS account and AWS CLI configured for the target account
-* Permission to create the CloudFormation resources in `cloudformation/EC2.yaml`
-* A GitHub repository with Actions enabled
+* AWSアカウントと、対象アカウントに接続できるAWS CLI
+* `cloudformation/EC2.yaml`に定義したリソースを作成する権限
+* GitHub Actionsを有効にしたGitHubリポジトリ
+* コマンド例はBash形式です。WindowsではGit BashまたはWSLなどで実行してください。
 
-The examples use the `ap-northeast-1` region. The template creates a VPC, public and private subnets, a NAT Gateway, an Elastic IP, and a `t3.micro` EC2 instance. NAT Gateway and Elastic IP charges apply while the stack exists.
+リージョンは`ap-northeast-1`（東京）を使用します。CloudFormationテンプレートはVPC、パブリック／プライベートサブネット、NAT Gateway、Elastic IP、および`t3.micro`のEC2インスタンスを作成します。スタックが存在する間はNAT Gatewayなどの料金が発生するため、検証後は必ず削除してください。
 
-## Deploy the AWS resources
+## AWSリソースの作成
 
-From the repository root, create the stack:
+リポジトリのルートディレクトリでCloudFormationスタックを作成します。
 
 ```bash
 aws cloudformation create-stack \
@@ -38,7 +39,7 @@ aws cloudformation wait stack-create-complete \
   --region ap-northeast-1
 ```
 
-Retrieve the instance ID:
+スタックの作成が完了したら、EC2のインスタンスIDを取得します。
 
 ```bash
 aws cloudformation describe-stacks \
@@ -48,21 +49,21 @@ aws cloudformation describe-stacks \
   --region ap-northeast-1
 ```
 
-## Configure GitHub Actions
+## GitHub Actionsの設定
 
-In **Settings > Secrets and variables > Actions**, add these repository settings:
+GitHubリポジトリの **Settings > Secrets and variables > Actions** で、次のRepository VariablesとRepository Secretsを設定します。
 
-* Repository variable `EC2_INSTANCE_ID`: the instance ID returned by CloudFormation
-* Repository secret `AWS_ACCESS_KEY_ID`: an AWS access key for a dedicated automation identity
-* Repository secret `AWS_SECRET_ACCESS_KEY`: the corresponding secret access key
+* Repository Variable `EC2_INSTANCE_ID`: CloudFormationから取得したインスタンスID
+* Repository Secret `AWS_ACCESS_KEY_ID`: 自動実行専用のIAMユーザーなどに発行したアクセスキーID
+* Repository Secret `AWS_SECRET_ACCESS_KEY`: 対応するシークレットアクセスキー
 
-The AWS identity needs permission to send the `AWS-RunShellScript` command to the target instance and retrieve the command invocation result. Limit permissions to the required resources where possible. For production use, prefer GitHub OIDC and an assumable IAM role over long-lived access keys.
+AWS認証情報には、対象インスタンスへの`AWS-RunShellScript`送信と、コマンド実行結果の取得に必要な権限を付与します。可能な範囲で対象リソースを限定してください。実運用では、長期アクセスキーの代わりにGitHub OIDCとIAMロールを利用する方法を推奨します。
 
-The workflow runs on pushes to `main`, sends `curl -sS https://example.com` through Systems Manager, waits for completion, and prints the standard output in the Actions log. Do not commit AWS credentials or other secrets to this repository.
+このワークフローは`main`ブランチへのpushで実行されます。SSM経由で`curl -sS https://example.com`を実行し、完了を待ってから標準出力をActionsのログに表示します。AWS認証情報などのシークレットをリポジトリへcommitしないでください。
 
-## Clean up
+## リソースの削除
 
-Delete the stack after testing to avoid ongoing NAT Gateway and Elastic IP charges:
+検証後はスタックを削除し、NAT Gatewayなどの継続課金を防ぎます。
 
 ```bash
 aws cloudformation delete-stack \
