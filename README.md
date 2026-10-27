@@ -120,6 +120,8 @@ aws iam attach-user-policy \
 最後にアクセスキーを発行します。結果にはシークレットアクセスキーが含まれるため、信頼できるローカル端末でのみ実行し、出力をチャットや共有ログへ貼り付けないでください。シークレットアクセスキーは発行時に一度しか表示されません。
 
 ```bash
+USER_NAME=github-actions-ssm
+
 aws iam create-access-key \
   --user-name "$USER_NAME" \
   --query 'AccessKey.[AccessKeyId,SecretAccessKey]' \
