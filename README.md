@@ -25,7 +25,14 @@ GitHub ActionsからAWS Systems Manager（SSM）のRun Commandを使って、プ
 
 ## AWSリソースの作成
 
-リポジトリのルートディレクトリでCloudFormationスタックを作成します。
+CloudShellを開いた直後はホームディレクトリ（`~`）にいるため、まずリポジトリをcloneして移動します。
+
+```bash
+git clone https://github.com/tmatusoka-apc/github-actions-run-tests-on-ec2.git
+cd github-actions-run-tests-on-ec2
+```
+
+リポジトリのルートディレクトリでCloudFormationスタックを作成します。`--template-body`には、`file://`を付けてローカルファイルを指定してください。`./EC2.yaml`のように`file://`なしで指定すると、ファイルパスではなくテンプレート本文として解釈されます。
 
 ```bash
 aws cloudformation create-stack \
@@ -51,15 +58,83 @@ aws cloudformation describe-stacks \
 
 ## GitHub Actionsの設定
 
-GitHubリポジトリの **Settings > Secrets and variables > Actions** で、次のRepository VariablesとRepository Secretsを設定します。
+### IAMユーザーと権限を作成（AWS CLI）
+
+> **注意:** ここでは本プロジェクトで使用している長期アクセスキー方式を再現します。新規構築では長期キーを発行せず、後述のGitHub OIDCによる認証を推奨します。
+
+以下のコマンドは、CloudFormationで作成したEC2に対するSSMコマンド実行用のIAMユーザーとポリシーを作成します。実行者にはIAMユーザー・ポリシーの作成とアタッチ、およびアクセスキー発行の権限が必要です。
+
+まずユーザー名、AWSアカウントID、対象EC2のインスタンスIDを設定し、コンソールログインを持たないIAMユーザーを作成します。
+
+```bash
+USER_NAME=github-actions-ssm
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+INSTANCE_ID=$(aws cloudformation describe-stacks \
+  --stack-name ec2-private-stack \
+  --query "Stacks[0].Outputs[?OutputKey=='InstanceId'].OutputValue" \
+  --output text \
+  --region ap-northeast-1)
+
+aws iam create-user --user-name "$USER_NAME"
+```
+
+続いて、SSMコマンドの送信先を対象EC2と`AWS-RunShellScript`ドキュメントに限定したポリシーファイルを作成します。アカウントIDとインスタンスIDは、先ほど設定したシェル変数から展開されます。
+
+```bash
+cat > github-actions-ssm-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": [
+        "arn:aws:ssm:ap-northeast-1::document/AWS-RunShellScript",
+        "arn:aws:ec2:ap-northeast-1:${AWS_ACCOUNT_ID}:instance/${INSTANCE_ID}"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": "ssm:GetCommandInvocation",
+      "Resource": "*"
+    }
+  ]
+}
+EOF
+```
+
+ポリシーをAWSに登録してユーザーへアタッチします。`GetCommandInvocation`はコマンド実行結果の読み取り権限です。
+
+```bash
+POLICY_ARN=$(aws iam create-policy \
+  --policy-name GitHubActionsSSMPolicy \
+  --policy-document file://github-actions-ssm-policy.json \
+  --query Policy.Arn \
+  --output text)
+
+aws iam attach-user-policy \
+  --user-name "$USER_NAME" \
+  --policy-arn "$POLICY_ARN"
+```
+
+最後にアクセスキーを発行します。結果にはシークレットアクセスキーが含まれるため、信頼できるローカル端末でのみ実行し、出力をチャットや共有ログへ貼り付けないでください。シークレットアクセスキーは発行時に一度しか表示されません。
+
+```bash
+aws iam create-access-key \
+  --user-name "$USER_NAME" \
+  --query 'AccessKey.[AccessKeyId,SecretAccessKey]' \
+  --output text
+```
+
+### GitHub SecretsとVariablesを設定
+
+GitHubリポジトリの **Settings > Secrets and variables > Actions** で、次のRepository VariablesとRepository Secretsを登録します。
 
 * Repository Variable `EC2_INSTANCE_ID`: CloudFormationから取得したインスタンスID
-* Repository Secret `AWS_ACCESS_KEY_ID`: 自動実行専用のIAMユーザーなどに発行したアクセスキーID
+* Repository Secret `AWS_ACCESS_KEY_ID`: 作成したIAMユーザーのアクセスキーID
 * Repository Secret `AWS_SECRET_ACCESS_KEY`: 対応するシークレットアクセスキー
 
-AWS認証情報には、対象インスタンスへの`AWS-RunShellScript`送信と、コマンド実行結果の取得に必要な権限を付与します。可能な範囲で対象リソースを限定してください。実運用では、長期アクセスキーの代わりにGitHub OIDCとIAMロールを利用する方法を推奨します。
-
-このワークフローは`main`ブランチへのpushで実行されます。SSM経由で`curl -sS https://example.com`を実行し、完了を待ってから標準出力をActionsのログに表示します。AWS認証情報などのシークレットをリポジトリへcommitしないでください。
+このワークフローは`main`ブランチへのpushで実行されます。SSM経由で`curl -sS https://example.com`を実行し、完了を待ってから標準出力をActionsのログに表示します。AWS認証情報などのシークレットをリポジトリへcommitしないでください。長期アクセスキーを使う場合は、専用IAMユーザーに必要最小限の権限だけを付与し、不要になったキーを無効化・削除してください。新規構築ではGitHub OIDCとIAMロールによる認証を推奨します。
 
 ## リソースの削除
 
@@ -73,4 +148,21 @@ aws cloudformation delete-stack \
 aws cloudformation wait stack-delete-complete \
   --stack-name ec2-private-stack \
   --region ap-northeast-1
+```
+
+専用IAMユーザーも不要になった場合は、GitHubのRepository SecretsとVariablesを削除した後、アクセスキー・ポリシー・ユーザーを削除します。以下は該当ユーザー専用に作成した場合だけ実行してください。
+
+```bash
+USER_NAME=github-actions-ssm
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+POLICY_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:policy/GitHubActionsSSMPolicy"
+ACCESS_KEY_ID=$(aws iam list-access-keys \
+  --user-name "$USER_NAME" \
+  --query 'AccessKeyMetadata[0].AccessKeyId' \
+  --output text)
+
+aws iam delete-access-key --user-name "$USER_NAME" --access-key-id "$ACCESS_KEY_ID"
+aws iam detach-user-policy --user-name "$USER_NAME" --policy-arn "$POLICY_ARN"
+aws iam delete-user --user-name "$USER_NAME"
+aws iam delete-policy --policy-arn "$POLICY_ARN"
 ```
